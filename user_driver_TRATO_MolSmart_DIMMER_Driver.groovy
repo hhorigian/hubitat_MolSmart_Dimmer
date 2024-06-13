@@ -13,6 +13,7 @@
  *  for the specific language governing permissions and limitations under the License.
  *        
  *        Versão 1.0 25/4/2024  - V.BETA 1
+  *       Versão 1.1 13/6/2024  - Added User Guide
  *
  */
 metadata {
@@ -34,8 +35,19 @@ import groovy.transform.Field
 command "buscainputcount"
 command "createchilds"
 
+    import groovy.transform.Field
+    @Field static final String DRIVER = "by TRATO"
+    @Field static final String USER_GUIDE = "https://github.com/hhorigian/hubitat_MolSmart_Dimmer"
+
+
+    String fmtHelpInfo(String str) {
+    String prefLink = "<a href='${USER_GUIDE}' target='_blank'>${str}<br><div style='font-size: 70%;'>${DRIVER}</div></a>"
+    return "<div style='font-size: 160%; font-style: bold; padding: 2px 0px; text-align: center;'>${prefLink}</div>"
+    }
+
+
   preferences {
-        input "device_IP_address", "text", title: "IP Address of Device", required: true, defaultValue: "192.168.1.206"   
+        input "device_IP_address", "text", title: "IP Address of MolSmart Dimmer"
         input "device_port", "number", title: "IP Port of Device", required: true, defaultValue: 502
         input name: "outputs", type: "string", title: "How many Relays " , defaultValue: 6      
         input name: "logEnable", type: "bool", title: "Enable debug logging", defaultValue: false
@@ -45,6 +57,9 @@ command "createchilds"
     input 'logWarn', 'bool', title: 'Show Warning Logs?', required: false, defaultValue: true
     input 'logDebug', 'bool', title: 'Show Debug Logs?', description: 'Only leave on when required', required: false, defaultValue: true
     input 'logTrace', 'bool', title: 'Show Detailed Logs?', description: 'Only leave on when required', required: false, defaultValue: true
+
+        //help guide
+        input name: "UserGuide", type: "hidden", title: fmtHelpInfo("Manual do Driver") 	  
 
     attribute "powerstatus", "string"
     
