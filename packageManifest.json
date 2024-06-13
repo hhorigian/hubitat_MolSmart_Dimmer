@@ -1,10 +1,10 @@
 {
  "packageName":"MolSmart - Dimmer 6CH (TCP)",
  "author":"Vartan Horigian",
- "version":"1.0",
+ "version":"1.1",
  "minimumHEVersion":"2.3.7.100",
  "dateReleased":"2024-05-20",
- "releaseNotes":"first version pushed to HPM",
+ "releaseNotes":"Added User Guide",
  "drivers": [
   {
      "id":"5562712a-3bfa-4f48-87b9-3687a279602b",
