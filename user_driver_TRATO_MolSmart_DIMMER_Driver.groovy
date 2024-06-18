@@ -13,8 +13,8 @@
  *  for the specific language governing permissions and limitations under the License.
  *        
  *        Versão 1.0 25/4/2024  - V.BETA 1
-  *       Versão 1.1 13/6/2024  - Added User Guide
- *
+ *       Versão 1.1 13/6/2024  - Added User Guide
+ *       Versão 1.2 18/6/2024 - Fixed index and length calc of network id. 
  */
 metadata {
   definition (name: "MolSmart DIMMER Driver TCP v3 - by TRATO", namespace: "TRATO", author: "TRATO", vid: "generic-contact") {
@@ -606,26 +606,40 @@ void SetLevel(cd,level) {
 	ipdomodulo  = state.ipaddress
     lengthvar =  (cd.deviceNetworkId.length())
     int relay = 0
-    if (lengthvar < 13) {
-    def numervalue1 = (cd.deviceNetworkId as String)[11]
+    
+// Start verify of length 
+      def substr1 = (cd.deviceNetworkId.indexOf("-",5))
+      def result01 = lengthvar - substr1 
+      if (result01 > 2  ) {
+           def  substr2a = substr1 + 1
+           def  substr2b = substr1 + 2
+           def substr3 = cd.deviceNetworkId[substr2a..substr2b]
+           numervalue1 = substr3
+
+           
+          
+      }
+      else {
+          def substr3 = cd.deviceNetworkId[substr1+1]
+          numervalue1 = substr3
+        
+           }
+
     def valor = ""
     valor =   numervalue1 as Integer
     relay = valor   
-    }
-    else 
-{
-    def numervalue2 = (cd.deviceNetworkId as String)[12] 
-    def valor = ""
-    valor =   numervalue2 as Integer
-    relay = valor 
-}
+    
+    ////
+    
      def stringrelay = relay
      def comando = "1" + stringrelay + "%" + level2
      interfaces.rawSocket.sendMessage(comando)
      log.info "Foi Alterado o Dimmer " + relay + " via TCP " + comando 
      state.update = 1  //variable to control update with board on parse  
     
-}
+
+
+}//of function
 
 
 
@@ -639,21 +653,27 @@ sendEvent(name: "switch", value: "on", isStateChange: true)
 ipdomodulo  = state.ipaddress
 lengthvar =  (cd.deviceNetworkId.length())
 int relay = 0
-if (lengthvar < 13) {
-    def numervalue1 = (cd.deviceNetworkId as String)[11]
+
+// Start verify of length     
+      def substr1 = (cd.deviceNetworkId.indexOf("-",5))
+      def result01 = lengthvar - substr1 
+      if (result01 > 2  ) {
+           def  substr2a = substr1 + 1
+           def  substr2b = substr1 + 2
+           def substr3 = cd.deviceNetworkId[substr2a..substr2b]
+           numervalue1 = substr3
+          
+      }
+      else {
+          def substr3 = cd.deviceNetworkId[substr1+1]
+          numervalue1 = substr3
+           }
+
     def valor = ""
     valor =   numervalue1 as Integer
     relay = valor   
-    }
 
-    else 
-   
-{
-    def numervalue2 = (cd.deviceNetworkId as String)[12] 
-    def valor = ""
-    valor =   numervalue2 as Integer
-    relay = valor 
-}
+///
      def stringrelay = relay
      def comando = "1" + stringrelay
      interfaces.rawSocket.sendMessage(comando)
@@ -674,21 +694,27 @@ cd.updateDataValue("Power","Off")
 ipdomodulo  = state.ipaddress
 lengthvar =  (cd.deviceNetworkId.length())
 int relay = 0
-if (lengthvar < 13) {
-    def numervalue1 = (cd.deviceNetworkId as String)[11]
+
+//Start verify length
+      def substr1 = (cd.deviceNetworkId.indexOf("-",5))
+      def result01 = lengthvar - substr1 
+      if (result01 > 2  ) {
+           def  substr2a = substr1 + 1
+           def  substr2b = substr1 + 2
+           def substr3 = cd.deviceNetworkId[substr2a..substr2b]
+           numervalue1 = substr3
+          
+      }
+      else {
+          def substr3 = cd.deviceNetworkId[substr1+1]
+          numervalue1 = substr3
+           }
+
     def valor = ""
     valor =   numervalue1 as Integer
     relay = valor   
-    }
 
-    else 
-    
-{
-    def numervalue2 = (cd.deviceNetworkId as String)[12] 
-    def valor = ""
-    valor =   numervalue2 as Integer
-    relay = valor 
-}
+///
      def stringrelay = relay
      def comando = "2" + stringrelay
      interfaces.rawSocket.sendMessage(comando)
@@ -750,4 +776,3 @@ void logWarn(String msg, boolean force = false) {
 void logError(String msg) {
     log.error "${drvThis}: ${msg}"
 }
-
