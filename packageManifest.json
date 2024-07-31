@@ -1,10 +1,10 @@
 {
  "packageName":"MolSmart - Dimmer 6CH (TCP)",
  "author":"Vartan Horigian",
- "version":"1.3",
+ "version":"1.4",
  "minimumHEVersion":"2.3.7.100",
  "dateReleased":"2024-07-31",
- "releaseNotes":"31/07/2024 - Improved connection methods. Added feedback for Level Event not showing in Childs. Added Master on/off. Corrected Dimmer 4 level feedback. ",
+ "releaseNotes":"1.4 31/07/2024 - Changed Feedback method. ",
  "drivers": [
   {
      "id":"5562712a-3bfa-4f48-87b9-3687a279602b",
