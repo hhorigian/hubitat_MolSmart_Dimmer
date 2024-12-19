@@ -17,6 +17,11 @@
  *       1.2 18/6/2024  - Fixed index and length calc of network id. 
  *       1.3 31/07/2024 - Improved connection methods. Added feedback for Level Event not showing in Childs. Added Master on/off. Corrected Dimmer 4 level feedback. 
  *       1.4 31/07/2024 - Changed Feedback method. 
+ *       1.5 16/12/2024 - Added Keypad Feedback.
+ *       1.6 17/12/2024 - Added Input Feedback.
+
+
+
  */
 metadata {
   definition (name: "MolSmart DIMMER Driver TCP v3 - by TRATO", namespace: "TRATO", author: "TRATO", vid: "generic-contact") {
@@ -251,25 +256,117 @@ def parse(msg) {
     def newmsg2 = new String(newmsg) // Array para String  
     state.lastmessage = newmsg2
 
-    if (newmsg2.contains("6")) {
-        state.channels = 6
-        log.debug "Placa Dimmer de 6 - IP - " + state.ipaddress
-    }      
-
-//NEW DEV 31.07.2024 vh - code com api
     
     log.info "****** New Block LOG Parse ********"
     log.info "Last Msg: " + newmsg2
     log.debug "Qde chars = " + newmsg2.length()   
     
-    outputs_changed = newmsg2[28..33]  
     outputs_status = newmsg2[0..17]
-    log.info "outputs_status: " + outputs_status
-    log.info "outputs_changed: " + outputs_changed
-    //log.info "state.updatemanual = " + state.updatemanual
+    state.old_status = state.new_status
+    state.new_status = outputs_status 
 
+    outputs_changed = newmsg2[28..33]  
+    inputs_changed  = newmsg2[19..24]        
+    inputs_changed2 = newmsg2[34..40]
+
+    log.info "OLD Dimmer Values (oldstatus) = " + state.old_status
+    log.info "NEW Dimmer Values (newstatus) = " +  state.new_status
     
-     if ( (outputs_changed.contains("1"))  ) {   
+    /*
+    if (state.old_status != state.new_status) {
+    
+        log.warn "Hubo cambio"
+    }
+    */
+    
+    if ((newmsg2.length() > 83 )) {
+    log.info "Entrou na alteração"   
+
+    outputs_changed2 = newmsg2[42..59]
+	inputs_changed3 = newmsg2[70..75]	
+    //log.info "outputs_changed2 = " + outputs_changed2
+	//log.info "Input Changed3 = " + inputs_changed3	
+		
+///////	
+		
+	 if  (inputs_changed3.contains("1")  ) {   
+
+         log.warn "Hubo cambio en un input"
+
+         inputchanged = inputs_changed3.indexOf('1'); 
+         //log.warn "Change in input # " + inputchanged   
+
+         numerorelay = Integer.toString(inputchanged+1) 
+		 //log.info "numerorelay = " + numerorelay
+         chdid = state.netids + numerorelay   
+		 //log.info "chdid = " + chdid
+         def cd = getChildDevice(chdid)  
+		 //log.info "cd = " + cd 
+         statusrelay = outputs_status.getAt(inputchanged)
+              
+             dim1 = outputs_changed2[0..2]
+             dim2 = outputs_changed2[3..5]
+             dim3 = outputs_changed2[6..8]
+             dim4 = outputs_changed2[9..11]
+             dim5 = outputs_changed2[12..14]
+             dim6 = outputs_changed2[15..17]   
+
+          switch(inputchanged) { 
+                case 0:
+                    logDebug ("Changes in Input#" + 1) ;
+                    valorsetlevel = dim1
+                    break 
+                case 1:
+                    logDebug ("Changes in Input#" + 2) ;
+                    valorsetlevel = dim2             
+                    break 
+                case 2:
+                    logDebug ("Changes in Input#" + 3) ;
+                    valorsetlevel = dim3                          
+                    break 
+                case 3:
+                    logDebug ("Changes in Input#" + 4) ;
+                    valorsetlevel = dim4                          
+                    break 
+                case 4:
+                    logDebug ("Changes in Input#" + 5) ;
+                    valorsetlevel = dim5                          
+                    break              
+                case 5:
+                    logDebug ("Changes in Input#" + 6) ;
+                    valorsetlevel = dim6             
+                    break              
+                default:
+                    log.info "Nada";
+                    break
+         }
+                 logDebug ( "Valor do setlevel para enviar = " + valorsetlevel + " en el netid " + cd + " Dimmer(REAL)# " + inputchanged)
+                 valorsetlevel = valorsetlevel as Integer  
+                 if (valorsetlevel > 0) {
+		                 getChildDevice(cd.deviceNetworkId).parse([[name:"switch", value:"on", descriptionText:"${cd.displayName} was turned on via ParseSetLevel > 0", isStateChange: true]])    
+	                 } else {
+	             getChildDevice(cd.deviceNetworkId).parse([[name:"switch", value:"off", descriptionText:"${cd.displayName} was turned off via ParseSetLevel < 0", isStateChange: true]])    
+	                 } 
+                 getChildDevice(cd.deviceNetworkId).parse([[name:"level", value: valorsetlevel, descriptionText:"${cd.displayName} was dimmered NEW VIA Parse"]])    
+         
+     }
+
+		
+///////
+        
+    } // TOTAL > 84
+        
+    if ((newmsg2.length() == 42 )) {    
+        log.info "Entrou no = 42.."    
+        outputs_status = newmsg2[0..17]   
+        inputs_changed = newmsg2[34..40]        
+        outputs_changed = newmsg2[28..33]  
+
+//    log.info "outputs_status: " + outputs_status
+//    log.info "inputs_changed: " + inputs_changed
+//    log.info "outputs_changed: " + outputs_changed
+    
+    if ( (outputs_changed.contains("1"))  ) {   
          //&& (state.updatemanual == 0)
          relaychanged = outputs_changed.indexOf('1'); 
          log.debug ("Yes - change in Dimmer Status")
@@ -330,6 +427,9 @@ def parse(msg) {
                      logDebug ( "no entrou, sem cambios ")
                      state.updatemanual = 0
          }
+
+    } // TOTAL 42
+
 }
 
 
@@ -511,7 +611,7 @@ void SetLevel(cd,level) {
      def comando = "1" + stringrelay + "%" + level2
      interfaces.rawSocket.sendMessage(comando)   
 
-    logDebug ( "Foi Alterado o Dimmer " + relay + " via TCP " + comando )
+    logDebug ( "Foi Alterado o Dimmer " + relay + " via TCP com STRING: " + comando )
     state.update = 1  //variable to control update with board on parse  
     
 
@@ -552,7 +652,7 @@ int relay = 0
      def stringrelay = relay
      def comando = "1" + stringrelay
      interfaces.rawSocket.sendMessage(comando)
-     logDebug ( "Foi Ligado o Relay " + relay + " via TCP " + comando )
+     logDebug ( "Foi Ligado o Relay " + relay + " via TCP com STRING: " + comando )
      state.updatemanual = 1  //variable to control update with board on parse
 
     
@@ -591,7 +691,7 @@ int relay = 0
      def stringrelay = relay
      def comando = "2" + stringrelay
      interfaces.rawSocket.sendMessage(comando)
-     logDebug ("Foi Desligado o Relay " + relay + " via TCP " + comando )
+     logDebug ("Foi Desligado o Relay " + relay + " via TCP com STRING: " + comando )
      state.updatemanual = 1  //variable to control update with board on parse
     
 }
