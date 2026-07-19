@@ -19,7 +19,14 @@
  *       1.4 31/07/2024 - Changed Feedback method. 
  *       1.5 16/12/2024 - Added Keypad Feedback.
  *       1.6 17/12/2024 - Added Input Feedback.
-
+ *       1.7 18/07/2026 - Fixed parse() crash (StringIndexOutOfBoundsException) causado por leitura fora
+ *                         dos limites da string (índices 34..40, variável não usada). Corrigida também
+ *                         a detecção de mudança de dimmer feita fora da Hubitat: trocado o teste exato
+ *                         length()==42 por length()>=34, que funciona tanto no firmware antigo (42 chars)
+ *                         quanto no novo (34/35 chars único, ou 70 chars no eco duplo).
+ *       1.8 18/07/2026 - Fixed NullPointerException em parse() quando getChildDevice(chdid) não encontra
+ *                         o child (prefixo state.netids desatualizado). Adicionado fallback por sufixo
+ *                         "-Switch-N" do deviceNetworkId antes de desistir.
 
 
  */
@@ -265,9 +272,8 @@ def parse(msg) {
     state.old_status = state.new_status
     state.new_status = outputs_status 
 
-    outputs_changed = newmsg2[28..33]  
-    inputs_changed  = newmsg2[19..24]        
-    inputs_changed2 = newmsg2[34..40]
+    outputs_changed = newmsg2[28..33]
+    inputs_changed  = newmsg2[19..24]
 
     log.info "OLD Dimmer Values (oldstatus) = " + state.old_status
     log.info "NEW Dimmer Values (newstatus) = " +  state.new_status
@@ -296,12 +302,21 @@ def parse(msg) {
          inputchanged = inputs_changed3.indexOf('1'); 
          //log.warn "Change in input # " + inputchanged   
 
-         numerorelay = Integer.toString(inputchanged+1) 
+         numerorelay = Integer.toString(inputchanged+1)
 		 //log.info "numerorelay = " + numerorelay
-         chdid = state.netids + numerorelay   
+         chdid = state.netids + numerorelay
 		 //log.info "chdid = " + chdid
-         def cd = getChildDevice(chdid)  
-		 //log.info "cd = " + cd 
+         def cd = getChildDevice(chdid)
+         if (!cd) {
+             // Fallback: o prefixo (state.netids) pode ter ficado desatualizado
+             // (ex.: device pai recriado). Busca pelo sufixo "-Switch-N", que é estável.
+             cd = childDevices?.find { it.deviceNetworkId?.endsWith("-Switch-${numerorelay}") }
+         }
+         if (!cd) {
+             logWarn("parse(): child do Dimmer #${numerorelay} não encontrado (chdid esperado: ${chdid}). Childs existentes: ${childDevices*.deviceNetworkId}")
+             return
+         }
+		 //log.info "cd = " + cd
          statusrelay = outputs_status.getAt(inputchanged)
               
              dim1 = outputs_changed2[0..2]
@@ -355,12 +370,15 @@ def parse(msg) {
 ///////
         
     } // TOTAL > 84
-        
-    if ((newmsg2.length() == 42 )) {    
-        log.info "Entrou no = 42.."    
-        outputs_status = newmsg2[0..17]   
-        inputs_changed = newmsg2[34..40]        
-        outputs_changed = newmsg2[28..33]  
+
+    else if ((newmsg2.length() >= 34 )) {
+        // Detecta mudança de dimmer usando só os primeiros 34 chars (status+changed),
+        // que existem em qualquer formato de firmware: 34/35 (msg única, MolSmart novo),
+        // 70 (eco duplo do próprio comando da Hubitat) ou 42 (firmware antigo).
+        // NÃO usar índices > 33 aqui - variam entre firmwares e não são usados nesta lógica.
+        log.info "Entrou na deteccao de mudanca de dimmer (len=${newmsg2.length()})"
+        outputs_status = newmsg2[0..17]
+        outputs_changed = newmsg2[28..33]
 
 //    log.info "outputs_status: " + outputs_status
 //    log.info "inputs_changed: " + inputs_changed
@@ -372,9 +390,18 @@ def parse(msg) {
          log.debug ("Yes - change in Dimmer Status")
          log.debug "outputs_changed dimmer # " + relaychanged   
     
-         numerorelay = Integer.toString(relaychanged+1)   
-         chdid = state.netids + numerorelay               
-         def cd = getChildDevice(chdid)   
+         numerorelay = Integer.toString(relaychanged+1)
+         chdid = state.netids + numerorelay
+         def cd = getChildDevice(chdid)
+         if (!cd) {
+             // Fallback: o prefixo (state.netids) pode ter ficado desatualizado
+             // (ex.: device pai recriado). Busca pelo sufixo "-Switch-N", que é estável.
+             cd = childDevices?.find { it.deviceNetworkId?.endsWith("-Switch-${numerorelay}") }
+         }
+         if (!cd) {
+             logWarn("parse(): child do Dimmer #${numerorelay} não encontrado (chdid esperado: ${chdid}). Childs existentes: ${childDevices*.deviceNetworkId}")
+             return
+         }
          statusrelay = outputs_status.getAt(relaychanged)
       
              dim1 = newmsg2[0..2]
@@ -428,7 +455,7 @@ def parse(msg) {
                      state.updatemanual = 0
          }
 
-    } // TOTAL 42
+    } // TOTAL >= 34
 
 }
 
