@@ -1,10 +1,10 @@
 {
  "packageName":"MolSmart - Dimmer 6CH (TCP)",
  "author":"Vartan Horigian",
- "version":"1.8",
+ "version":"3.0.0",
  "minimumHEVersion":"2.3.7.100",
- "dateReleased":"2026-07-18",
- "releaseNotes":"1.8 18/07/2026 - Fixed parse() crash (StringIndexOutOfBoundsException) e correção de deteccao de mudanca de dimmer feita fora da Hubitat: removida leitura fora dos limites (indices 34..40) e trocado length()==42 por length()>=34, cobrindo mensagens de 34/35 (firmware novo), 70 (eco duplo) e 42 (firmware antigo). Fixed NullPointerException quando getChildDevice(chdid) nao encontra o child (fallback por sufixo -Switch-N do deviceNetworkId).",
+ "dateReleased":"2026-11-03",
+ "releaseNotes":"TS-3.0.0 (TecnoSimples) — Canais sempre iguais à placa (inclusive teclas físicas e outros controles), rampa ao segurar no dashboard, reconexão robusta e troca de IP automática; boardstatus vira online e é preciso um Save Preferences depois do Update. / Channels always match the board (including wall keys and other controllers), ramp on hold from dashboards, robust reconnection and automatic IP change; boardstatus becomes online, and one Save Preferences is needed after the Update.",
  "drivers": [
   {
      "id":"5562712a-3bfa-4f48-87b9-3687a279602b",

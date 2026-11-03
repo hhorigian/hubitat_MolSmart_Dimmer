@@ -1,777 +1,779 @@
 /**
- *  Hubitat - TCP MolSmart Dimmer Drivers by TRATO - BETA OK
+ * MolSmart DIMMER Driver TCP v3 - by TRATO
  *
- *  Copyright 2024 VH
+ * Fork TecnoSimples do driver "MolSmart DIMMER Driver TCP v3 - by TRATO" de VH.
+ * Copyright 2024 VH (original)
+ * Copyright 2026 TecnoSimples Tecnologia LTDA (modificações)
+ * contato@tecnosimples.com.br | (14) 99760-6885
  *
- *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
- *  in compliance with the License. You may obtain a copy of the License at:
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ * in compliance with the License. You may obtain a copy of the License at:
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- *  Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
- *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
- *  for the specific language governing permissions and limitations under the License.
- *        
- *       1.0 25/4/2024  - V.BETA 1
- *       1.1 13/6/2024  - Added User Guide
- *       1.2 18/6/2024  - Fixed index and length calc of network id. 
- *       1.3 31/07/2024 - Improved connection methods. Added feedback for Level Event not showing in Childs. Added Master on/off. Corrected Dimmer 4 level feedback. 
- *       1.4 31/07/2024 - Changed Feedback method. 
- *       1.5 16/12/2024 - Added Keypad Feedback.
- *       1.6 17/12/2024 - Added Input Feedback.
- *       1.7 18/07/2026 - Fixed parse() crash (StringIndexOutOfBoundsException) causado por leitura fora
- *                         dos limites da string (índices 34..40, variável não usada). Corrigida também
- *                         a detecção de mudança de dimmer feita fora da Hubitat: trocado o teste exato
- *                         length()==42 por length()>=34, que funciona tanto no firmware antigo (42 chars)
- *                         quanto no novo (34/35 chars único, ou 70 chars no eco duplo).
- *       1.8 18/07/2026 - Fixed NullPointerException em parse() quando getChildDevice(chdid) não encontra
- *                         o child (prefixo state.netids desatualizado). Adicionado fallback por sufixo
- *                         "-Switch-N" do deviceNetworkId antes de desistir.
-
-
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
+ * on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
+ * for the specific language governing permissions and limitations under the License.
+ *
+ * Versão do pacote: 3.0.0
+ *
+ * Versões TecnoSimples:
+ *   TS-1.0.0  26/10/2026  Fork do VH 1.8: estado pelos níveis do frame, reconexão e vínculo pela série
+ *   TS-1.0.1  26/10/2026  Migração do VH: nível acima de 100 corrigido
+ *   TS-1.0.2  27/10/2026  Publicação no HPM
+ *   TS-3.0.0  29/10/2026  Versão única nos dois canais (pacote TecnoSimples e repositório do VH); sem mudança de comportamento
  */
-metadata {
-  definition (name: "MolSmart DIMMER Driver TCP v3 - by TRATO", namespace: "TRATO", author: "TRATO", vid: "generic-contact") {
-        capability "Switch"  
-        capability "Configuration"
-        capability "Initialize"
-        capability "Refresh"
-		capability "SwitchLevel"
-		capability "ChangeLevel"      
-      
-  }
-    
-  }
-
-import groovy.json.JsonSlurper
-import groovy.transform.Field
-command "buscainputcount"
-command "createchilds"
-command "connectionCheck"
-command "ManualKeepAlive"
-command "verstatus"
-
-    import groovy.transform.Field
-    @Field static final String DRIVER = "by TRATO"
-    @Field static final String USER_GUIDE = "https://github.com/hhorigian/hubitat_MolSmart_Dimmer"
-
-
-    String fmtHelpInfo(String str) {
-    String prefLink = "<a href='${USER_GUIDE}' target='_blank'>${str}<br><div style='font-size: 70%;'>${DRIVER}</div></a>"
-    return "<div style='font-size: 160%; font-style: bold; padding: 2px 0px; text-align: center;'>${prefLink}</div>"
-    }
-
-
-  preferences {
-        input "device_IP_address", "text", title: "IP Address of MolSmart Dimmer"
-        input "device_port", "number", title: "IP Port of Device", required: true, defaultValue: 502
-        input name: "outputs", type: "string", title: "How many Relays " , defaultValue: 6      
-        input name: "logEnable", type: "bool", title: "Enable debug logging", defaultValue: false
-        //input name: "powerstatus", type: "string", title: "Power Status" 
-
-    input 'logInfo', 'bool', title: 'Show Info Logs?',  required: false, defaultValue: true
-    input 'logWarn', 'bool', title: 'Show Warning Logs?', required: false, defaultValue: true
-    input 'logDebug', 'bool', title: 'Show Debug Logs?', description: 'Only leave on when required', required: false, defaultValue: true
-    input 'logTrace', 'bool', title: 'Show Detailed Logs?', description: 'Only leave on when required', required: false, defaultValue: true
-
-        //help guide
-        input name: "UserGuide", type: "hidden", title: fmtHelpInfo("Manual do Driver") 	  
-
-    //attribute "powerstatus", "string"
-    attribute "boardstatus", "string"      
-    
-      
-  }   
-
-
-@Field static String partialMessage = ''
-@Field static Integer checkInterval = 600
-
-
-def installed() {
-    logTrace('installed()')
-    state.childscreated = 0
-    boardstatus = "offline"
-    runIn(1800, logsOff)
-} //OK
-
-def uninstalled() {
-    logTrace('uninstalled()')
-    unschedule()
-    interfaces.rawSocket.close()
-} //OK
-
-def updated() {
-    logTrace('updated()')
-    refresh()
-}
-
-
-def ManualKeepAlive (){
-    logTrace('ManualKeepAlive()')
-    interfaces.rawSocket.close();
-    interfaces.rawSocket.close();
-    unschedule()
-    //state.clear()
-    
-    //Llama la busca de count de inputs+outputs
-    buscainputcount()
-    
-    try {
-        logTrace("ManualKeepAlive: Tentando conexão com o device no ${device_IP_address}...na porta ${device_port}");
-        interfaces.rawSocket.connect(device_IP_address, (int) device_port);
-        state.lastMessageReceivedAt = now();        
-        runIn(checkInterval, "connectionCheck");
-        if (boardstatus != "online") { 
-            sendEvent(name: "boardstatus", value: "online", isStateChange: true)    
-            boardstatus = "online"
-        }
-        refresh();  // se estava offline, preciso fazer um refresh
-        
-    }
-    catch (e) {
-        logError( "ManualKeepAlive: ${device_IP_address}  error: ${e.message}" )
-        if (boardstatus != "offline") { 
-            boardstatus = "offline"
-            sendEvent(name: "boardstatus", value: "offline", isStateChange: true)
-        }
-        runIn(60, "initialize");
-    }    
-}
-
-
-def initialize() {
-    unschedule()
-    logTrace('Run Initialize()')
-    interfaces.rawSocket.close();
-    interfaces.rawSocket.close();
-    if (!device_IP_address) {
-        logError 'IP do Device not configured'
-        return
-    }
-
-    if (!device_port) {
-        logError 'Porta do Device não configurada.'
-        return
-    }
-    
-    //Llama la busca de count de inputs+outputs via HTTP
-    buscainputcount()
-    
-    try {
-        logTrace("Initialize: Tentando conexão com o device no ${device_IP_address}...na porta configurada: ${device_port}");
-        interfaces.rawSocket.connect(device_IP_address, (int) device_port);
-        state.lastMessageReceivedAt = now();        
-        if (boardstatus != "online") { 
-            sendEvent(name: "boardstatus", value: "online", isStateChange: true)    
-            boardstatus = "online"
-        }
-        boardstatus = "online"
-        runIn(checkInterval, "connectionCheck");
-        
-    }
-    catch (e) {
-        logError( "Initialize: com ${device_IP_address} com um error: ${e.message}" )
-        boardstatus = "offline"
-        runIn(60, "initialize");
-    }
-    
-    try{
-         
-          logTrace("Criando childs")
-          createchilds()       
-        
-    }
-    catch (e) {
-        logError( "Error de Initialize: ${e.message}" )
-    }
-    runIn(10, "refresh");
-}
-
-
-def createchilds() {
-
-    String thisId = device.id
-	log.info "info thisid " + thisId
-	
-    def cd = getChildDevice("${thisId}-Switch")
-    state.netids = "${thisId}-Switch-"
-    
-	if (state.childscreated == 0) {
-    
-	if (!cd) {
-        log.info "inputcount = " + state.inputcount 
-        for(int i = 1; i<=state.inputcount; i++) {        
-        cd = addChildDevice("hubitat", "Generic Component Dimmer", "${thisId}-Switch-" + Integer.toString(i), [name: "${device.displayName} Switch-" + Integer.toString(i) , isComponent: true])
-        log.info "added dimmer # " + i + " from " + state.inputcount            
-        
-    }
-    }
-      state.childscreated = 1   
-    }
-    else {
-        log.info "Childs Dimmers já foram criados"
-    }
-  
-}
-
-
-def buscainputcount(){                              
-            state.inputcount = 6  // deixar o numero de relays na memoria
-            def ipmolsmart = settings.device_IP_address
-            state.ipaddress = settings.device_IP_address    
-}
-
-
-def refresh() {
-    logInfo('Refresh()')
-    def msg = "REFRESH"    
-    sendCommand(msg)
-}
-
-
-def verstatus() {
-    
-                 for(int i = 1; i<=state.inputcount; i++) {   
-                 numerorelay = Integer.toString(i)
-                 chdid = state.netids + numerorelay   
-                 def cd = getChildDevice(chdid)
-                 def switchstatus = cd.currentValue("level")
-                 log.info "switchstatus  " + numerorelay + " = " + switchstatus                    
-                }    
-}
-
-
-//Feedback e o tratamento 
-
- def fetchChild(String type, String name){
-    String thisId = device.id
-    def cd = getChildDevice("${thisId}-${type}_${name}")
-    if (!cd) {
-        cd = addChildDevice("hubitat", "Generic Component ${type}", "${thisId}-${type}_${name}", [name: "${name}", isComponent: true])
-        cd.parse([[name:"switch", value:"off", descriptionText:"set initial switch value"]]) //TEST!!
-    }
-    return cd 
-}
-
-
-def parse(msg) {
-    state.lastMessageReceived = new Date(now()).toString();
-    state.lastMessageReceivedAt = now();
-
-    def newmsg = hubitat.helper.HexUtils.hexStringToByteArray(msg) //na Mol, o resultado vem em HEX, então preciso converter para Array
-    def newmsg2 = new String(newmsg) // Array para String  
-    state.lastmessage = newmsg2
-
-    
-    log.info "****** New Block LOG Parse ********"
-    log.info "Last Msg: " + newmsg2
-    log.debug "Qde chars = " + newmsg2.length()   
-    
-    outputs_status = newmsg2[0..17]
-    state.old_status = state.new_status
-    state.new_status = outputs_status 
-
-    outputs_changed = newmsg2[28..33]
-    inputs_changed  = newmsg2[19..24]
-
-    log.info "OLD Dimmer Values (oldstatus) = " + state.old_status
-    log.info "NEW Dimmer Values (newstatus) = " +  state.new_status
-    
-    /*
-    if (state.old_status != state.new_status) {
-    
-        log.warn "Hubo cambio"
-    }
-    */
-    
-    if ((newmsg2.length() > 83 )) {
-    log.info "Entrou na alteração"   
-
-    outputs_changed2 = newmsg2[42..59]
-	inputs_changed3 = newmsg2[70..75]	
-    //log.info "outputs_changed2 = " + outputs_changed2
-	//log.info "Input Changed3 = " + inputs_changed3	
-		
-///////	
-		
-	 if  (inputs_changed3.contains("1")  ) {   
-
-         log.warn "Hubo cambio en un input"
-
-         inputchanged = inputs_changed3.indexOf('1'); 
-         //log.warn "Change in input # " + inputchanged   
-
-         numerorelay = Integer.toString(inputchanged+1)
-		 //log.info "numerorelay = " + numerorelay
-         chdid = state.netids + numerorelay
-		 //log.info "chdid = " + chdid
-         def cd = getChildDevice(chdid)
-         if (!cd) {
-             // Fallback: o prefixo (state.netids) pode ter ficado desatualizado
-             // (ex.: device pai recriado). Busca pelo sufixo "-Switch-N", que é estável.
-             cd = childDevices?.find { it.deviceNetworkId?.endsWith("-Switch-${numerorelay}") }
-         }
-         if (!cd) {
-             logWarn("parse(): child do Dimmer #${numerorelay} não encontrado (chdid esperado: ${chdid}). Childs existentes: ${childDevices*.deviceNetworkId}")
-             return
-         }
-		 //log.info "cd = " + cd
-         statusrelay = outputs_status.getAt(inputchanged)
-              
-             dim1 = outputs_changed2[0..2]
-             dim2 = outputs_changed2[3..5]
-             dim3 = outputs_changed2[6..8]
-             dim4 = outputs_changed2[9..11]
-             dim5 = outputs_changed2[12..14]
-             dim6 = outputs_changed2[15..17]   
-
-          switch(inputchanged) { 
-                case 0:
-                    logDebug ("Changes in Input#" + 1) ;
-                    valorsetlevel = dim1
-                    break 
-                case 1:
-                    logDebug ("Changes in Input#" + 2) ;
-                    valorsetlevel = dim2             
-                    break 
-                case 2:
-                    logDebug ("Changes in Input#" + 3) ;
-                    valorsetlevel = dim3                          
-                    break 
-                case 3:
-                    logDebug ("Changes in Input#" + 4) ;
-                    valorsetlevel = dim4                          
-                    break 
-                case 4:
-                    logDebug ("Changes in Input#" + 5) ;
-                    valorsetlevel = dim5                          
-                    break              
-                case 5:
-                    logDebug ("Changes in Input#" + 6) ;
-                    valorsetlevel = dim6             
-                    break              
-                default:
-                    log.info "Nada";
-                    break
-         }
-                 logDebug ( "Valor do setlevel para enviar = " + valorsetlevel + " en el netid " + cd + " Dimmer(REAL)# " + inputchanged)
-                 valorsetlevel = valorsetlevel as Integer  
-                 if (valorsetlevel > 0) {
-		                 getChildDevice(cd.deviceNetworkId).parse([[name:"switch", value:"on", descriptionText:"${cd.displayName} was turned on via ParseSetLevel > 0", isStateChange: true]])    
-	                 } else {
-	             getChildDevice(cd.deviceNetworkId).parse([[name:"switch", value:"off", descriptionText:"${cd.displayName} was turned off via ParseSetLevel < 0", isStateChange: true]])    
-	                 } 
-                 getChildDevice(cd.deviceNetworkId).parse([[name:"level", value: valorsetlevel, descriptionText:"${cd.displayName} was dimmered NEW VIA Parse"]])    
-         
-     }
-
-		
-///////
-        
-    } // TOTAL > 84
-
-    else if ((newmsg2.length() >= 34 )) {
-        // Detecta mudança de dimmer usando só os primeiros 34 chars (status+changed),
-        // que existem em qualquer formato de firmware: 34/35 (msg única, MolSmart novo),
-        // 70 (eco duplo do próprio comando da Hubitat) ou 42 (firmware antigo).
-        // NÃO usar índices > 33 aqui - variam entre firmwares e não são usados nesta lógica.
-        log.info "Entrou na deteccao de mudanca de dimmer (len=${newmsg2.length()})"
-        outputs_status = newmsg2[0..17]
-        outputs_changed = newmsg2[28..33]
-
-//    log.info "outputs_status: " + outputs_status
-//    log.info "inputs_changed: " + inputs_changed
-//    log.info "outputs_changed: " + outputs_changed
-    
-    if ( (outputs_changed.contains("1"))  ) {   
-         //&& (state.updatemanual == 0)
-         relaychanged = outputs_changed.indexOf('1'); 
-         log.debug ("Yes - change in Dimmer Status")
-         log.debug "outputs_changed dimmer # " + relaychanged   
-    
-         numerorelay = Integer.toString(relaychanged+1)
-         chdid = state.netids + numerorelay
-         def cd = getChildDevice(chdid)
-         if (!cd) {
-             // Fallback: o prefixo (state.netids) pode ter ficado desatualizado
-             // (ex.: device pai recriado). Busca pelo sufixo "-Switch-N", que é estável.
-             cd = childDevices?.find { it.deviceNetworkId?.endsWith("-Switch-${numerorelay}") }
-         }
-         if (!cd) {
-             logWarn("parse(): child do Dimmer #${numerorelay} não encontrado (chdid esperado: ${chdid}). Childs existentes: ${childDevices*.deviceNetworkId}")
-             return
-         }
-         statusrelay = outputs_status.getAt(relaychanged)
-      
-             dim1 = newmsg2[0..2]
-             dim2 = newmsg2[3..5]
-             dim3 = newmsg2[6..8]
-             dim4 = newmsg2[9..11]
-             dim5 = newmsg2[12..14]
-             dim6 = newmsg2[15..17]   
-             
  
-         switch(relaychanged) { 
-                case 0:
-                    logDebug ("Changes in Dimmer#" + 1) ;
-                    valorsetlevel = dim1
-                    break 
-                case 1:
-                    logDebug ("Changes in Dimmer#" + 2) ;
-                    valorsetlevel = dim2             
-                    break 
-                case 2:
-                    logDebug ("Changes in Dimmer#" + 3) ;
-                    valorsetlevel = dim3                          
-                    break 
-                case 3:
-                    logDebug ("Changes in Dimmer#" + 4) ;
-                    valorsetlevel = dim4                          
-                    break 
-                case 4:
-                    logDebug ("Changes in Dimmer#" + 5) ;
-                    valorsetlevel = dim5                          
-                    break              
-                case 5:
-                    logDebug ("Changes in Dimmer#" + 6) ;
-                    valorsetlevel = dim6             
-                    break              
-                default:
-                    log.info "nada";
-                    break
-         }
-                 logDebug ( "valor do setlevel para enviar = " + valorsetlevel + " en el netid " + cd + " Dimmer(REAL)# " + relaychanged)
-                 valorsetlevel = valorsetlevel as Integer  
-                 if (valorsetlevel > 0) {
-		                 getChildDevice(cd.deviceNetworkId).parse([[name:"switch", value:"on", descriptionText:"${cd.displayName} was turned on via ParseSetLevel > 0", isStateChange: true]])    
-	                 } else {
-	             getChildDevice(cd.deviceNetworkId).parse([[name:"switch", value:"off", descriptionText:"${cd.displayName} was turned off via ParseSetLevel < 0", isStateChange: true]])    
-	                 } 
-                 getChildDevice(cd.deviceNetworkId).parse([[name:"level", value: valorsetlevel, descriptionText:"${cd.displayName} was dimmered NEW VIA Parse"]])    
-         
-     }   else {
-                     logDebug ( "no entrou, sem cambios ")
-                     state.updatemanual = 0
-         }
+import groovy.transform.Field
+metadata {
+definition (
+name: "MolSmart DIMMER Driver TCP v3 - by TRATO",
+namespace: "TRATO",
+author: "TecnoSimples Tecnologia LTDA (fork do driver de VH/TRATO)",
+importUrl: "https://raw.githubusercontent.com/hhorigian/hubitat_MolSmart_Dimmer/main/user_driver_TRATO_MolSmart_DIMMER_Driver.groovy",
+singleThreaded: true
+) {
+capability "Initialize"
+capability "Refresh"
+capability "Actuator"
+capability "Configuration"
+capability "Switch"
+capability "SwitchLevel"
+capability "ChangeLevel"
+command "vincularPlaca"
+attribute "driverVersion", "string"
+attribute "online", "string"
+attribute "lastRx", "number"
+attribute "vinculoPlaca", "string"
+attribute "ultimaTrocaIp", "string"
+}
+preferences {
+input(name: "secAjuda", type: "hidden", title: HELP_HTML)
+input(name: "secConexao", type: "hidden", title: "<hr><b>Conexão</b>")
+input(name: "ipAddress", type: "text", title: "IP da placa", required: true,
+description: 'Endereço da placa MolSmart Dimmer na rede. O dispositivo fica preso à placa pelo número de série: se o IP dela mudar, o driver a reencontra sozinho e atualiza este campo. A reserva de IP no roteador continua recomendada. Para trocar a placa por outra: mude o IP aqui e salve; se a placa nova ficou no mesmo IP, use o botão Vincular Placa. Os dispositivos dos canais aparecem sozinhos depois da primeira leitura da placa.')
+input(name: "ipPort", type: "number", title: "Porta TCP da placa", defaultValue: 502, range: "1..65535",
+description: 'Padrão 502. Só mude se a placa foi configurada com outra porta.')
+input(name: "hbInterval", type: "number", title: "Intervalo de verificação da placa (s)", defaultValue: 15, range: "5..120", required: true,
+description: 'A cada X segundos o hub pede o estado da placa: mantém a conexão viva e atualiza os canais. Padrão 15. Menor percebe queda mais rápido; maior gera menos tráfego.')
+input(name: "idleTimeout", type: "number", title: "Considerar a placa desconectada após (s)", defaultValue: 60, range: "10..600", required: true,
+description: 'Se a placa ficar esse tempo sem mandar uma leitura válida, o driver reconecta. Nunca é menor que 3× o intervalo de verificação (com 15 s, no mínimo 45 s). Padrão 60.')
+input(name: "reconnectMin", type: "number", title: "Reconexão: primeira espera (s)", defaultValue: 5, range: "1..120", required: true,
+description: 'Depois de uma queda, o driver tenta de novo após este tempo e dobra a espera a cada falha, até o máximo abaixo. Padrão 5.')
+input(name: "reconnectMax", type: "number", title: "Reconexão: espera máxima (s)", defaultValue: 60, range: "5..600", required: true,
+description: 'Limite da espera entre tentativas. Padrão 60.')
+input(name: "secDimmer", type: "hidden", title: "<hr><b>Dimmer</b>")
+input(name: "allowMasterOnOff", type: "bool", title: "Permitir comandar todos os canais pelo dispositivo principal", defaultValue: true,
+description: 'Ligado (padrão): On, Off, Set Level e a rampa deste dispositivo agem em todos os canais da placa, um de cada vez. Desligado: esses comandos continuam aparecendo, mas não fazem nada — só registram um aviso no log.')
+input(name: "rampStep", type: "number", title: "Passo da rampa ao segurar o botão (%)", defaultValue: 5, range: "1..25",
+description: 'Quanto o nível sobe ou desce a cada passo enquanto o botão de subir/descer fica pressionado (um passo a cada 0,3 s). Padrão 5. A rampa para sozinha em 20 s, ao chegar a 100 % ou, descendo, a 1 % (segurar não desliga a luz).')
+input(name: "secAvancado", type: "hidden", title: "<hr><b>Avançado — normalmente não precisa mexer</b>")
+input(name: "autoFindBoard", type: "bool", title: "Vincular à placa pelo número de série e reencontrá-la se o IP mudar", defaultValue: true,
+description: 'Ligado (padrão): o driver só conecta depois de a placa confirmar o número de série, e, se ela mudar de IP, procura na rede e atualiza o IP sozinho. Desligado: volta a confiar só no IP — inclusive conectando em outra placa que assuma esse IP. Placas sem número de série funcionam como desligado.')
+input(name: "findAfterFails", type: "number", title: "Procurar a placa na rede depois de quantas tentativas sem resposta", defaultValue: 3, range: "1..20",
+description: 'Padrão 3. Vale quando a placa não responde no IP configurado.')
+input(name: "findEveryMin", type: "number", title: "Intervalo mínimo entre buscas (min)", defaultValue: 30, range: "5..1440",
+description: 'Padrão 30. Se a busca não achar a placa, a próxima só acontece depois deste tempo.')
+input(name: "logEnable", type: "bool", title: "Registrar detalhes técnicos no log (diagnóstico)", defaultValue: false,
+description: 'Desligado (padrão). Ligue só para investigar um problema: o log passa a mostrar cada mensagem trocada com a placa. Desliga sozinho 30 minutos depois de salvar. Avisos e erros aparecem sempre.')
+}
+}
+@Field static java.util.Random _rng = new java.util.Random()
+@Field static final String DRIVER_VERSION = "TS-3.0.0-VH"
+@Field static final long TX_GAP_MS = 50L 
+@Field static final int RAMP_STEP_MS = 300
+@Field static final long RAMP_MAX_MS = 20000L 
+@Field static final long LASTRX_PUB_MS = 60000L 
+@Field static final int GUARD_EXTRA_S = 45 
 
-    } // TOTAL >= 34
+@Field static final int FIND_WINDOW = 6
+@Field static final long SCAN_LEASE_MS = 180000L
+@Field static final long SEEN_FRESH_MS = 300000L
+@Field static final String VINC_OK = "ok"
+@Field static final String VINC_OFF = "desligado"
+@Field static final String VINC_NOSN = "sem série"
+@Field static final String VINC_NOCONF = "sem confirmação — a placa não respondeu o número de série"
+@Field static final String VINC_WAIT = "aguardando a placa do IP novo responder"
 
+@Field static final java.util.concurrent.ConcurrentHashMap SCAN_LEASE = new java.util.concurrent.ConcurrentHashMap()
+@Field static final java.util.concurrent.ConcurrentHashMap SEEN = new java.util.concurrent.ConcurrentHashMap()
+@Field static final java.util.concurrent.ConcurrentHashMap SCAN_CNT = new java.util.concurrent.ConcurrentHashMap()
+
+@Field static final List LEGACY_STATE = ["childscreated", "netids", "inputcount", "ipaddress", "update", "updatemanual",
+"old_status", "new_status", "lastmessage", "lastMessageReceived", "lastMessageReceivedAt"]
+@Field static final List LEGACY_SETTINGS = ["outputs", "logInfo", "logWarn", "logDebug", "logTrace"]
+@Field static final String HELP_HTML = '''<details><summary><b>Ajuda: o que faz cada botão e estado da tela principal ▸</b></summary>
+<p><b>Botões (aba Commands)</b> — os nomes ficam em inglês (o Hubitat não deixa traduzir)</p><ul>
+<li><b>Initialize / Configure</b> — Reconecta à placa. Também roda sozinho ao salvar e ao reiniciar o hub. Trocou a placa por outra no mesmo IP? Use Vincular Placa.</li>
+<li><b>Refresh</b> — Pede agora o nível de todos os canais.</li>
+<li><b>On / Off</b> — Ligam ou desligam TODOS os canais, um por vez. Ligar volta cada canal ao último nível usado.</li>
+<li><b>Set Level</b> — Põe todos os canais no mesmo nível (0 desliga). A duração é ignorada nesta versão.</li>
+<li><b>Start / Stop Level Change</b> — Sobe ou desce o nível de todos os canais aos poucos, até o Stop.</li>
+<li><b>Vincular Placa</b> — Vincula este dispositivo à placa que está no IP configurado, pelo número de série dela. Use quando trocar uma placa queimada por outra no mesmo IP. Se a placa não responder o número de série, nada muda.</li>
+</ul><p>Com "Permitir comandar todos os canais" desligado nas Preferences, On, Off, Set Level e Start Level Change não fazem nada.</p>
+<p><b>Estados (Current States e State Variables)</b></p><ul>
+<li><b>Online</b> — true = recebendo leituras da placa; false = sem conexão (o driver tenta reconectar sozinho).</li>
+<li><b>Last Rx</b> — Hora da última leitura válida da placa, em milissegundos (atualizada no máximo uma vez por minuto).</li>
+<li><b>Switch</b> — on só com todos os canais ligados, off só com todos desligados; misturado, fica o último.</li>
+<li><b>vinculoPlaca</b> — A que placa este dispositivo está preso. <i>ok</i> = a placa do IP configurado confirmou o número de série. <i>sem confirmação</i> = a placa não respondeu o número de série; o driver não conecta e tenta de novo sozinho. <i>placa diferente neste IP</i> = quem está nesse IP é outra placa; o driver não conecta nem comanda, e procura a placa certa. Se a troca foi de propósito, use Vincular Placa. <i>procurando a placa</i> = busca na rede em andamento ou sem sucesso; repete sozinha. <i>aguardando a placa do IP novo responder</i> = você mudou o IP e a placa de lá ainda não respondeu. <i>sem série</i> = a placa não informa número de série; o driver confia só no IP. <i>desligado</i> = recurso desligado nas Preferences (Avançado).</li>
+<li><b>ultimaTrocaIp</b> — Última vez que o driver achou a placa em outro IP e atualizou o endereço sozinho. Se aparecer, falta a reserva de IP no roteador.</li>
+<li><b>Driver Version</b> — Versão do driver instalada.</li>
+<li><b>Rx Valid / Rx Invalid / Rx Dropped</b> (State Variables) — Leituras da placa que chegaram certas, corrompidas ou descartadas desde Rx Stats Since. Invalid ou Dropped subindo = rede com problema, ou placa que o driver não reconhece.</li>
+</ul>
+<p>Os dispositivos de cada canal (Canal N) são criados sozinhos. Para renomear, abra o dispositivo do canal e mude o Device label. Não use o botão Remove neles: apagar um canal quebra as regras e painéis que o usam.</p></details>'''
+ 
+private void logDbg(msg){ if (settings?.logEnable) log.debug("${device.displayName ?: device.name}: ${msg}") }
+private void logInf(msg){ log.info ("${device.displayName ?: device.name}: ${msg}") }
+private void logWar(msg){ log.warn ("${device.displayName ?: device.name}: ${msg}") }
+private void logErr(msg){ log.error("${device.displayName ?: device.name}: ${msg}") }
+ 
+private int clampInt(v, l, h){ Math.max(l as int, Math.min(h as int, (v ?: 0) as int)) }
+
+private int prefInt(String name, int dflt, int lo, int hi){
+def v = settings?."${name}"
+if (v == null || (v instanceof CharSequence && !v.toString().trim())) return dflt
+try { return clampInt((v instanceof Number) ? v : new BigDecimal(v.toString().trim()), lo, hi) }
+catch (e) { logWar("Preferência ${name} inválida (${v}); usando ${dflt}"); return dflt }
+}
+private String resolveIP(){ String ip = settings?.ipAddress ?: settings?.device_IP_address; return ip?.toString()?.trim() }
+private Integer resolvePort(){ (settings?.ipPort as Integer) ?: (settings?.device_port as Integer) ?: 502 }
+
+
+private def childOrNull(String dni){
+try { return getChildDevice(dni) }
+catch (e) { logWar("filho ${dni} indisponível neste frame (${e})"); return null }
+}
+private String childDni(int n){ "${device.id}-Switch-${n}".toString() }
+private Integer channelOf(cd){
+def m = ((cd?.deviceNetworkId ?: "") =~ /-Switch-(\d+)$/)
+return m.find() ? (m.group(1) as Integer) : null
+}
+
+private def childFor(int n){
+def cd = childOrNull(childDni(n))
+if (cd) return cd
+try { return childDevices?.find { (it.deviceNetworkId ?: "").endsWith("-Switch-${n}") } }
+catch (e) { logWar("filhos indisponíveis neste frame (${e})"); return null }
+}
+private void setOnline(boolean b){
+String v = b.toString()
+if (device.currentValue("online") != v) sendEvent(name: "online", value: v)
+}
+private void markRxNow(){
+long t = now()
+state.lastRx = t
+setOnline(true)
+if (t - ((state.lastRxPub ?: 0L) as Long) >= LASTRX_PUB_MS){ state.lastRxPub = t; sendEvent(name: "lastRx", value: t) }
+}
+ 
+private boolean autoFindOn(){ settings?.autoFindBoard != false } 
+private String expectedSn(){ String s = (state.NumeroSerie ?: "").toString().trim(); return s ?: null }
+
+private void ensureBoundIp(){ if (expectedSn() != null && !state.boundIp){ String ip = resolveIP(); if (ip) state.boundIp = ip } }
+private void publishVinculo(String v){ if (state.vinc != v){ state.vinc = v; sendEvent(name: "vinculoPlaca", value: v) } }
+
+private String boardCheck(boolean ligado, String esperada, boolean pendente, String lida){
+if (!ligado) return "SKIP"
+if (esperada == null) return (lida != null) ? "MATCH" : "SKIP" 
+if (pendente) return (lida != null) ? "MATCH" : "UNKNOWN" 
+if (lida == null) return "UNKNOWN"
+return (lida == esperada) ? "MATCH" : "MISMATCH"
+}
+
+private boolean applyBoardCheck(String lida){
+ensureBoundIp()
+String ip = resolveIP()
+String esp = expectedSn()
+boolean pend = (esp != null) && state.boundIp && (state.boundIp != ip) 
+switch (boardCheck(autoFindOn(), esp, pend, lida)){
+case "SKIP":
+publishVinculo(autoFindOn() ? VINC_NOSN : VINC_OFF)
+return true
+case "MATCH":
+if (esp == null || pend){
+if (esp != lida) logInf("Placa vinculada: série ${lida}" + (esp ? " (antes ${esp})" : ""))
+state.NumeroSerie = lida
+}
+state.boundIp = ip
+state.idMiss = 0
+cancelScan()
+publishVinculo(VINC_OK)
+return true
+case "MISMATCH":
+String dif = "placa diferente neste IP (série ${lida}; esperada ${esp}) — use Vincular Placa para vincular a esta".toString()
+if (state.vinc != dif) logWar("A placa em ${ip} tem a série ${lida}; este dispositivo está vinculado à série ${esp}. Não conecto. Procurando a placa certa; para vincular a esta, use Vincular Placa.")
+publishVinculo(dif)
+maybeStartScan(true)
+return false
+default: 
+state.idMiss = ((state.idMiss ?: 0) as int) + 1
+if (pend){ publishVinculo(VINC_WAIT); return false } 
+if (!(state.vinc ?: "").startsWith("placa diferente")) publishVinculo(vinculoBusca() ?: VINC_NOCONF)
+maybeStartScan(false)
+return false
+}
+}
+ 
+private String vinculoBusca(){
+String esp = expectedSn()
+if (state.scan) return "procurando a placa (série ${esp})…".toString()
+if (state.scanMiss) return "procurando a placa (série ${esp}) — última busca ${state.scanMiss}, não encontrada".toString()
+return null
+}
+private void releaseLease(){
+String me = device.id.toString()
+Map l = SCAN_LEASE.get("l") as Map
+if (l != null && l.dev == me) SCAN_LEASE.remove("l", l)
+}
+private void cancelScan(){
+if (state.scan){
+boolean mini = ((state.scan as Map)?.mini == true)
+releaseLease(); SCAN_CNT.remove(device.id.toString()); state.remove("scan"); unschedule("scanTick")
+if (!mini) state.remove("lastScanAt") 
+}
+state.remove("scanMiss")
+}
+private void scanEnd(boolean achou){
+boolean mini = ((state.scan as Map)?.mini == true)
+releaseLease(); SCAN_CNT.remove(device.id.toString()); state.remove("scan"); unschedule("scanTick")
+if (!achou && mini){ String e = expectedSn(); if (e) SEEN.remove(e); return } 
+if (!achou){
+state.scanMiss = new Date().format("HH:mm", location.timeZone)
+logWar("Busca terminada: a placa (série ${expectedSn()}) não foi encontrada na sub-rede. Nova busca em ${prefInt('findEveryMin', 30, 5, 1440)} min.")
+if (!(state.vinc ?: "").startsWith("placa diferente")) publishVinculo(vinculoBusca())
+}
+}
+
+private void maybeStartScan(boolean agora){
+if (state.scan) return
+if (!agora && ((state.idMiss ?: 0) as int) < prefInt("findAfterFails", 3, 1, 20)) return
+String esp = expectedSn(); String ip = resolveIP()
+if (!esp || !ip) return
+Map seen = SEEN.get(esp) as Map
+if (seen != null && (now() - (seen.at as Long)) < SEEN_FRESH_MS && (seen.ip as String) != ip){ probeCandidate(seen.ip as String); return }
+long every = prefInt("findEveryMin", 30, 5, 1440) * 60000L
+if (state.lastScanAt && (now() - (state.lastScanAt as Long)) < every) return
+if (!(ip ==~ /\d{1,3}(\.\d{1,3}){3}/)){ logWar("Busca da placa: o IP configurado (${ip}) não é um IPv4 — sem busca."); return }
+String me = device.id.toString()
+Map lease = SCAN_LEASE.get("l") as Map
+Map novo = [dev: me, at: now()]
+boolean got
+if (lease == null) got = (SCAN_LEASE.putIfAbsent("l", novo) == null)
+else if ((now() - (lease.at as Long)) >= SCAN_LEASE_MS || lease.dev == me) got = SCAN_LEASE.replace("l", lease, novo)
+else got = false
+if (!got) return
+int id = ((state.scanSeq ?: 0) as int) + 1
+state.scanSeq = id
+state.lastScanAt = now()
+state.remove("scanMiss")
+state.scan = [id: id, base: ip.tokenize(".").take(3).join("."), next: 1]
+java.util.concurrent.ConcurrentHashMap c = new java.util.concurrent.ConcurrentHashMap()
+c.putAll([id: id, sent: 0, done: 0, last: now()])
+SCAN_CNT.put(me, c)
+logWar("Procurando a placa (série ${esp}) na sub-rede ${state.scan.base}.x…")
+if (!(state.vinc ?: "").startsWith("placa diferente")) publishVinculo(vinculoBusca())
+runIn(_rng.nextInt(20) + 1, "scanTick")
+}
+private void probeCandidate(String cand){
+int id = ((state.scanSeq ?: 0) as int) + 1
+state.scanSeq = id
+state.scan = [id: id, base: cand.tokenize(".").take(3).join("."), next: 255, mini: true]
+java.util.concurrent.ConcurrentHashMap c = new java.util.concurrent.ConcurrentHashMap()
+c.putAll([id: id, sent: 1, done: 0, last: now()])
+SCAN_CNT.put(device.id.toString(), c)
+try { asynchttpGet("scanCallback", [uri: "http://${cand}/get/sn.cgi".toString(), timeout: 2], [id: id, ip: cand]) }
+catch (e) { c.put("done", 1) }
+runIn(1, "scanTick")
+}
+def scanTick(){
+Map sc = state.scan as Map
+if (!sc) return
+Map c = SCAN_CNT.get(device.id.toString()) as Map
+if (c == null || (c.id as Integer) != (sc.id as Integer)){ scanEnd(false); return }
+if ((now() - (c.last as Long)) > 30000L){ scanEnd(false); return }
+int n = sc.next as int
+int infl = (c.sent as int) - (c.done as int)
+while (infl < FIND_WINDOW && n <= 254){
+String alvo = "${sc.base}.${n}".toString()
+try {
+asynchttpGet("scanCallback", [uri: "http://${alvo}/get/sn.cgi".toString(), timeout: 2], [id: sc.id, ip: alvo])
+c.merge("sent", 1) { a, b -> a + b }; c.put("last", now()); infl++; n++
+} catch (e) {
+logDbg("busca: envio a ${alvo} falhou (${e}); repete no próximo segundo")
+break
+}
+}
+sc.next = n
+state.scan = sc
+if (n <= 254 || (infl > 0 && (now() - (c.last as Long)) < 10000L)) runIn(1, "scanTick")
+else scanEnd(false)
+}
+def scanCallback(resp, Map data){
+String lida = snFromResponse(resp)
+if (lida) SEEN.put(lida, [ip: data?.ip, at: now()])
+Map c = SCAN_CNT.get(device.id.toString()) as Map
+if (c != null && (c.id as Integer) == (data?.id as Integer)) c.merge("done", 1) { a, b -> a + b }
+Map sc = state.scan as Map
+if (!sc || (sc.id as Integer) != (data?.id as Integer)) return
+if (!lida || lida != expectedSn()) return
+if ((data.ip as String) == resolveIP()){ scanEnd(true); return }
+boardFound(data.ip as String)
+}
+
+private void boardFound(String ipNovo){
+String ipAntigo = resolveIP()
+scanEnd(true)
+disconnectSocket()
+state.idMiss = 0
+state.remove("verify"); unschedule("verifyTimeout")
+device.updateSetting("ipAddress", [value: ipNovo, type: "text"])
+state.boundIp = ipNovo
+String quando = new Date().format("dd/MM/yyyy HH:mm", location.timeZone)
+sendEvent(name: "ultimaTrocaIp", value: "${ipAntigo} → ${ipNovo} em ${quando}".toString())
+logWar("Placa (série ${expectedSn()}) encontrada em ${ipNovo}; antes ${ipAntigo}. IP atualizado — confira a reserva de DHCP.")
+unschedule("doReconnect")
+state.reconnecting = true
+runIn(1, "doReconnect")
+runIn(1 + GUARD_EXTRA_S, "reconnectGuard", [overwrite:true])
+}
+
+def vincularPlaca(){
+String ip = resolveIP()
+if (!ip){ logWar("Vincular Placa: IP não configurado."); return }
+String lida = null
+try {
+httpGet([ uri: "http://${ip}/get/sn.cgi", headers: httpHeaders(), timeout: 5 ]) { resp ->
+def d = resp.data
+lida = (d instanceof Map) ? (d.sn != null ? d.sn.toString().trim() : null) : extractSnFlexible(d?.toString())
+}
+} catch (e) { logDbg("Vincular Placa: sn.cgi falhou: ${e}") }
+if (!lida){
+logWar("Vincular Placa: a placa em ${ip} não respondeu o número de série — nada mudou.")
+return
+}
+String antes = expectedSn()
+state.NumeroSerie = lida
+state.boundIp = ip
+logInf("Vincular Placa: dispositivo vinculado à série ${lida} em ${ip}" + ((antes && antes != lida) ? " (antes ${antes})" : ""))
+initialize()
+}
+ 
+private Map httpHeaders(){ return [:] }
+
+private String snFromResponse(resp){
+try {
+if ((resp?.status as Integer) != 200) return null
+def d = resp.getData()
+if (d instanceof Map) return (d.sn != null) ? d.sn.toString().trim() : null
+return extractSnFlexible(d?.toString())
+} catch (e) { return null }
+}
+private static String extractSnFlexible(String s){
+if (!s) return null
+String t = s.trim()
+try {
+def js = new groovy.json.JsonSlurper().parseText(t)
+def v = js?.sn
+if (v != null) return v.toString().trim()
+} catch(ex) {}
+def m = (t =~ /(?i)\b"sn"\s*:\s*"?([\w\-\.\:]+)"?/)
+if (m.find()) return m.group(1)
+m = (t =~ /(?i)\bsn\s*[=:]\s*"?([\w\-\.\:]+)"?/)
+if (m.find()) return m.group(1)
+if (t.startsWith("{") && t.endsWith("}") && t.contains("=")) {
+String body = t.substring(1, t.length()-1)
+for (String pair : body.split(/\s*,\s*/)) {
+String[] kv = pair.split(/\s*[=:]\s*/, 2)
+if (kv.size() == 2 && kv[0].trim().equalsIgnoreCase("sn")) {
+return kv[1].trim().replaceAll(/^"(.*)"$/, "\$1")
+}
+}
+}
+return null
+}
+ 
+private void initRxStats(){
+if (state.rxValid == null) state.rxValid = 0
+if (state.rxInvalid == null) state.rxInvalid = 0
+if (state.rxDropped == null) state.rxDropped = 0
+if (state.rxStatsSince == null) state.rxStatsSince = new Date().format("yyyy-MM-dd HH:mm:ss")
+}
+private void bumpRx(String k){
+if (state.rxStatsSince == null) initRxStats()
+state[k] = ((state[k] ?: 0) as long) + 1
+}
+ 
+def installed(){
+device.updateSetting("logEnable", [value:"false", type:"bool"])
+initialize()
+}
+def updated(){ initialize() }
+def configure(){ initialize() }
+def uninstalled(){ unschedule(); state.remove("verify"); cancelScan(); disconnectSocket() }
+
+def initialize(){
+unschedule()
+disconnectSocket()
+sendEvent(name: "driverVersion", value: DRIVER_VERSION)
+if (settings?.logEnable) runIn(1800, "logsOff")
+logInf("Initialize (${DRIVER_VERSION})")
+state.reconnecting = false 
+initRxStats()
+state.remove("verify")
+cancelScan()
+migrateFromVh()
+if (!resolveIP()){ logWar("IP da placa não configurado. Preencha o IP nas Preferences e salve."); return }
+verifyThenConnect()
+}
+
+private void migrateFromVh(){
+if (!settings?.ipAddress && settings?.device_IP_address){
+device.updateSetting("ipAddress", [value: settings.device_IP_address.toString().trim(), type: "text"])
+logInf("Configuração migrada do driver VH: device_IP_address → ipAddress (${settings.device_IP_address})")
+}
+if (settings?.ipPort == null && settings?.device_port){
+device.updateSetting("ipPort", [value: (settings.device_port as Integer), type: "number"])
+logInf("Configuração migrada do driver VH: device_port → ipPort (${settings.device_port})")
+}
+
+List<String> removidas = []
+if (settings?.ipAddress && settings?.containsKey("device_IP_address")){ device.removeSetting("device_IP_address"); removidas << "device_IP_address" }
+if (settings?.ipPort != null && settings?.containsKey("device_port")){ device.removeSetting("device_port"); removidas << "device_port" }
+LEGACY_SETTINGS.each { String k -> if (settings?.containsKey(k)){ device.removeSetting(k); removidas << k } }
+if (removidas) logInf("Preferências do driver VH removidas: ${removidas.join(', ')}")
+LEGACY_STATE.each { String k -> if (state.containsKey(k)) state.remove(k) }
+
+List kids
+try { kids = (childDevices ?: []) as List }
+catch (e){ kids = []; logWar("filhos indisponíveis na migração (${e}); level > 100 fica para o próximo Initialize") }
+kids.each { cd ->
+def lv = cd.currentValue("level")
+if (lv != null && (lv as Integer) > 100){
+cd.parse([[name: "level", value: 100, unit: "%", descriptionText: "${cd.displayName} nível ${lv}% herdado do driver VH corrigido para 100%"]])
+logInf("${cd.displayName}: nível ${lv}% herdado do driver VH corrigido para 100%")
+}
+}
+if (device.currentValue("boardstatus") != null){
+device.deleteCurrentState("boardstatus")
+logInf("Atributo boardstatus do driver VH removido — o estado da conexão agora é o atributo online.")
+}
+}
+ 
+private void connectSocket(){
+String ip = resolveIP()
+Integer port = resolvePort()
+if (!ip){ markSocketOffline(); return }
+try { interfaces.rawSocket.close() } catch(ignored){} 
+try{
+interfaces.rawSocket.connect(ip, port as int)
+state.socketOnline = true
+state.rxBuf = '' 
+state.connectedAt = now() 
+state.chWarned = false
+logInf("Socket conectado a ${ip}:${port}")
+state.reconnectAttempt = 0
+
+unschedule("doReconnect"); unschedule("reconnectGuard"); state.reconnecting = false
+scheduleHeartbeat(); scheduleWatchdog(); runIn(1, "heartbeat", [overwrite:true])
+} catch(e){
+logErr("Falha ao conectar em ${ip}:${port}: ${e}")
+scheduleReconnect("connect error")
+}
+}
+
+private void markSocketOffline(){
+state.socketOnline = false
+state.ramp = [:]
+unschedule("heartbeat"); unschedule("rampStep"); unschedule("connectionCheck")
+setOnline(false)
+}
+private void disconnectSocket(){ markSocketOffline(); try { interfaces.rawSocket.close() } catch(ignored){} }
+private void scheduleHeartbeat(){ runIn(prefInt("hbInterval", 15, 5, 120), "heartbeat", [overwrite:true]) }
+def heartbeat(){ if (state.socketOnline != true) return; if (txRaw("00", "HB")) scheduleHeartbeat() }
+private void scheduleWatchdog(){ runIn(5, "connectionCheck", [overwrite:true]) }
+
+private long watchdogBase(){ Math.max((state.connectedAt ?: 0L) as Long, (state.lastRx ?: 0L) as Long) }
+def connectionCheck(){
+if (state.socketOnline != true) return 
+int hb = prefInt("hbInterval", 15, 5, 120)
+int effIdle = Math.max(prefInt("idleTimeout", 60, 10, 600), hb * 3)
+if (state.connectedAt == null){ state.connectedAt = now(); scheduleWatchdog(); return }
+long idle = now() - watchdogBase()
+if (idle >= effIdle * 1000L){
+logErr("Sem leitura válida da placa há ${String.format('%.1f', idle/1000.0)}s (limite=${effIdle}s). Reconectando…")
+scheduleReconnect("idle timeout"); return
+}
+scheduleWatchdog()
+}
+private void scheduleReconnect(String reason, boolean closeSocket = true){
+if (state.reconnecting == true) return
+state.reconnecting = true
+int attempt = ((state.reconnectAttempt ?: 0) as int) + 1
+state.reconnectAttempt = attempt
+int minS = prefInt("reconnectMin", 5, 1, 120)
+int maxS = prefInt("reconnectMax", 60, 5, 600)
+int delay = Math.min(maxS, (int)Math.pow(2D, Math.min(6, attempt-1)) * minS) + _rng.nextInt(Math.max(1, minS))
+logWar("Reconectar (#${attempt}) em ~${delay}s (${reason})")
+runIn(delay, "doReconnect", [overwrite:true])
+runIn(delay + GUARD_EXTRA_S, "reconnectGuard", [overwrite:true])
+if (closeSocket) disconnectSocket() else markSocketOffline()
 }
 
 
+def reconnectGuard(){
+if (state.socketOnline == true || !resolveIP()) return
+Map v = state.verify as Map
+if (v != null && (now() - ((v.at ?: 0L) as Long)) < 30000L){
+runIn(GUARD_EXTRA_S, "reconnectGuard", [overwrite:true]); return
+}
+logWar("Reconexão parada: a tentativa agendada não aconteceu. Retomando sozinho.")
+state.reconnecting = false
+scheduleReconnect("reconexão parada")
+}
+def doReconnect(){ state.reconnecting = false; verifyThenConnect() }
 
-////////////////
-////Commands 
-////////////////
-
-def on()
-{
-    logDebug("Master Power ON()")
-    masteron()
+private void verifyThenConnect(){
+ensureBoundIp()
+String ip = resolveIP()
+if (!ip){ connectSocket(); return }
+if (!autoFindOn()){ applyBoardCheck(null); connectSocket(); return }
+Map v = state.verify as Map
+if (v != null && (now() - ((v.at ?: 0L) as Long)) < 30000L) return
+int gen = ((state.verifyGen ?: 0) as int) + 1
+state.verifyGen = gen
+state.verify = [gen: gen, ip: ip, at: now()]
+runIn(15, "verifyTimeout", [overwrite: true, data: [gen: gen]])
+try {
+asynchttpGet("verifyCallback", [uri: "http://${ip}/get/sn.cgi".toString(), timeout: 5], [gen: gen, ip: ip])
+} catch (e) {
+state.remove("verify"); unschedule("verifyTimeout")
+logWar("Conferência da série não pôde ser enviada: ${e}")
+scheduleReconnect("conferência não pôde ser enviada")
+}
+}
+def verifyCallback(resp, Map data){
+Map v = state.verify as Map
+if (v == null || (v.gen as Integer) != (data?.gen as Integer) || (data?.ip as String) != resolveIP()) return
+state.remove("verify"); unschedule("verifyTimeout")
+if (applyBoardCheck(snFromResponse(resp))) connectSocket()
+else scheduleReconnect("placa não confirmada")
+}
+def verifyTimeout(Map data){
+Map v = state.verify as Map
+if (v == null || (v.gen as Integer) != (data?.gen as Integer)) return
+state.remove("verify")
+scheduleReconnect("conferência sem resposta")
+}
+def socketStatus(String message){
+logWar("socketStatus: ${message}")
+if (!(message?.toLowerCase()?.contains("normal") ?: false)) scheduleReconnect("socketStatus", false)
 }
 
-def off()
-{
-    logDebug("Master Power OFF()")
-    masteroff()
+private boolean txRaw(String msg, String reason){
+if (state.socketOnline != true){ logErr("Placa offline: ${reason} não enviado"); return false }
+long gap = TX_GAP_MS - (now() - ((state.lastTxAt ?: 0L) as Long))
+if (gap > 0) pauseExecution(gap)
+try{
+interfaces.rawSocket.sendMessage(msg)
+state.lastTxAt = now()
+logDbg("TX (${reason}): ${msg}")
+return true
+} catch(e){
+logWar("Falha ao enviar '${msg}' (${reason}): ${e}")
+scheduleReconnect("send fail")
+return false
+}
+}
+def logsOff(){
+log.info "${device.displayName}: desligando o log de diagnóstico (30 min)."
+device.updateSetting("logEnable", [value:"false", type:"bool"])
+}
+ 
+
+@Field static final int MAX_CH = 6
+@Field static final int RX_LEFTOVER_MAX = 200
+
+static Map splitFrames(String buf, String chunk){
+String b = (buf ?: '') + (chunk ?: '').replace('\n', '\r')
+List<String> lines = []
+int cut
+while ((cut = b.indexOf('\r')) >= 0){
+String line = b.substring(0, cut).trim()
+b = b.substring(cut + 1)
+if (line) lines << line
+}
+boolean dropped = false
+if (b.length() > RX_LEFTOVER_MAX){ dropped = true; b = '' }
+return [lines: lines, rest: b, dropped: dropped]
+}
+
+static Map parseFrame(String line){
+String[] p = line.split(':', -1)
+if (p.length < 4 || !(p[2] ==~ /\d{1,2}/)) return null
+int n = p[2] as int
+if (n < 1 || n > MAX_CH) return null
+if (p[0].length() != 3 * n || !(p[0] ==~ /\d+/)) return null
+if (p[1].length() != n || !(p[1] ==~ /[01]+/)) return null
+if (p[3].length() != n || !(p[3] ==~ /[01]+/)) return null
+List<Integer> lv = (0..<n).collect { int i -> p[0].substring(3 * i, 3 * i + 3) as int }
+if (lv.any { it > 100 }) return null
+return [levels: lv, extra: p.length > 4]
 }
 
 
-def masteron()
-{
-        log.info "MasterON() Executed"  
-        for(int i = 1; i<=state.inputcount; i++) {        
-                 numerorelay = Integer.toString(i)
-                 chdid = state.netids + numerorelay               
-                 def cd = getChildDevice(chdid)
-                 getChildDevice(cd.deviceNetworkId).parse([[name:"switch", value:"on", descriptionText:"${cd.displayName} was turned on"]])    
-                 logDebug ( "Dimmer " + cd + " turned ON")
-                 on(cd)  
-                 pauseExecution(300)     
-       
-        }
+static String hexToText(String hex){
+if (!(hex ==~ /(?i)([0-9a-f]{2})+/)) throw new IllegalArgumentException("chunk não-hex")
+new String(hubitat.helper.HexUtils.hexStringToByteArray(hex))
 }
 
-def masteroff()
-{
-        log.info "MasterOFF() Executed"
-        for(int i = 1; i<=state.inputcount; i++) {        
-                 numerorelay = Integer.toString(i)
-                 chdid = state.netids + numerorelay               
-                 def cd = getChildDevice(chdid)
-                 getChildDevice(cd.deviceNetworkId).parse([[name:"switch", value:"off", descriptionText:"${cd.displayName} was turned off"]])    
-                 logDebug ("Dimmer " + cd + " turned OFF")
-                 off(cd)  
-                 pauseExecution(300)     
-       
-        }
+def parse(String payload){
+if (!payload) return
+String txt
+try { txt = hexToText(payload) }
+catch (e){ bumpRx("rxDropped"); logDbg("Chunk não-hex descartado: ${payload}"); return }
+Map r = splitFrames(state.rxBuf as String, txt)
+if (r.dropped){ bumpRx("rxDropped"); logDbg("Resto sem frame descartado") }
+state.rxBuf = r.rest
+for (String line : (r.lines as List<String>)) handleLine(line)
+}
+private void handleLine(String line){
+Map f = parseFrame(line)
+if (f == null){ bumpRx("rxInvalid"); logDbg("Frame descartado: ${line}"); return }
+bumpRx("rxValid"); markRxNow()
+logDbg("RX: ${line}")
+if (f.extra && !state.oldFwWarned){
+state.oldFwWarned = true
+logInf("Formato de frame do firmware antigo (campo extra no fim): ${line}")
+}
+applyLevels(f.levels as List<Integer>)
 }
 
-
-
-private sendCommand(s) {
-    logDebug("sendCommand ${s}")
-    interfaces.rawSocket.sendMessage(s)   
-    logDebug ( "Sent Command to Board = " + s)
+private void applyLevels(List<Integer> lv){
+ensureChildren(lv.size())
+lv.eachWithIndex { Integer v, int i ->
+def cd = childFor(i + 1)
+if (!cd) return
+String sw = v > 0 ? "on" : "off"
+if (v > 0 && ((cd.currentValue("level") ?: -1) as Integer) != v)
+cd.parse([[name: "level", value: v, unit: "%", descriptionText: "${cd.displayName} nível ${v}%"]])
+if (cd.currentValue("switch") != sw)
+cd.parse([[name: "switch", value: sw, descriptionText: "${cd.displayName} ${sw == 'on' ? 'ligado' : 'desligado'}"]])
+}
+String pai = lv.every { it > 0 } ? "on" : (lv.every { it == 0 } ? "off" : null)
+if (pai && device.currentValue("switch") != pai) sendEvent(name: "switch", value: pai)
 }
 
-
-
-
-////////////////////////////
-//// Connections Checks ////
-////////////////////////////
-
-def connectionCheck() {
-    def now = now();
-    
-    if ( now - state.lastMessageReceivedAt > (checkInterval * 1000)) { 
-        logError("ConnectionCheck:Sem mensagens desde ${(now - state.lastMessageReceivedAt)/60000} minutos, vamos tentar reconectar ...");
-        if (boardstatus != "offline") { 
-            sendEvent(name: "boardstatus", value: "offline", isStateChange: true)    
-            boardstatus = "offline"
-        }
-        runIn(30, "connectionCheck");
-        initialize();
-    }
-    else {
-        logInfo("Connection Check: Status OK - Board Online");
-        if (boardstatus != "online") { 
-            sendEvent(name: "boardstatus", value: "online", isStateChange: true)    
-            boardstatus = "online"
-        }
-        runIn(checkInterval, "connectionCheck");
-    }
+private void ensureChildren(int n){
+List kids
+try { kids = (childDevices ?: []) as List }
+catch (e){ logWar("filhos indisponíveis neste frame (${e}); nada criado agora"); return }
+Set<Integer> tem = (kids.collect { channelOf(it) }.findAll { it != null }) as Set<Integer>
+for (int i = 1; i <= n; i++){
+if (tem.contains(i)) continue
+try {
+addChildDevice("hubitat", "Generic Component Dimmer", childDni(i),
+[name: "${device.displayName} Canal ${i}", label: "${device.displayName} Canal ${i}", isComponent: true])
+logInf("Criado o dispositivo do canal ${i}")
+} catch (e){ logWar("Não foi possível criar o canal ${i}: ${e}") }
 }
-
-
-def socketStatus(String message) {
-    if (message == "receive error: String index out of range: -1") {
-        // This is some error condition that repeats every 15ms.
-
-        interfaces.rawSocket.close();       
-        logError( "socketStatus: ${message}");
-        logError( "Closing connection to device" );
-    }
-    else if (message != "receive error: Read timed out") {
-        logError( "socketStatus: ${message}")
-    }
+int maior = tem ? (tem.max() as int) : 0
+if (maior > n && !state.chWarned){
+state.chWarned = true
+logWar("A placa informa ${n} canais, mas existem dispositivos até o canal ${maior}; os excedentes ficam sem atualização (nada é apagado).")
 }
-
-
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Component Child
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void componentRefresh(cd){
-	if (logEnable) log.info "received refresh request from ${cd.displayName}"
-	refresh()  
-    
 }
-
+ 
+def refresh(){ txRaw("00", "refresh") }
+def componentRefresh(cd){ txRaw("00", "refresh") }
+private String dirOf(direction){ (direction?.toString()?.toLowerCase() == "down") ? "down" : "up" }
+private boolean sendLevel(int n, level, duration){
+if (duration != null) logDbg("canal ${n}: duração ${duration} ignorada (sem transição nesta versão)")
+int v = clampInt(Math.round(((level ?: 0) as double)), 0, 100)
+return (v == 0) ? txRaw("2${n}", "canal ${n} off") : txRaw("1${n}%${v}", "canal ${n} nível ${v}")
+}
 def componentOn(cd){
-	if (logEnable) log.info "received on request from ${cd.displayName}"
-    getChildDevice(cd.deviceNetworkId).parse([[name:"switch", value:"on", descriptionText:"${cd.displayName} was turned on via ComponentOn "]])       
-    on(cd)  
-    pauseExecution(200)
-    state.updatemanual = 1
-    
+Integer n = channelOf(cd); if (n == null) return
+rampStop([n]); txRaw("1${n}", "canal ${n} on")
 }
-
-void componentOff(cd){
-	if (logEnable) log.info "received off request from ${cd.displayName}"
-    getChildDevice(cd.deviceNetworkId).parse([[name:"switch", value:"off", descriptionText:"${cd.displayName} was turned off via ComponentOFF "]])    
-	off(cd)
-    pauseExecution(200)
-    state.updatemanual = 1
-
+def componentOff(cd){
+Integer n = channelOf(cd); if (n == null) return
+rampStop([n]); txRaw("2${n}", "canal ${n} off")
 }
-
-void componentSetLevel(cd,level) {
-    if (logEnable) log.info "received set level dimmer from ${cd.displayName}"
-    def valueaux = level as Integer
-	def level2 = Math.max(Math.min(valueaux, 99), 0)
-	if (level2 > 0) {
-		getChildDevice(cd.deviceNetworkId).parse([[name:"switch", value:"on", descriptionText:"${cd.displayName} was turned on via ComponentSetLevel > 0", isStateChange: true]])    
-	} else {
-		getChildDevice(cd.deviceNetworkId).parse([[name:"switch", value:"off", descriptionText:"${cd.displayName} was turned off via ComponentSetLevel < 0", isStateChange: true]])    
-	}
-    SetLevel(cd,level)   
-    getChildDevice(cd.deviceNetworkId).parse([[name:"level", value: level2, descriptionText:"${cd.displayName} was dimmered via Interface"]]) 
+def componentSetLevel(cd, level, duration = null){
+Integer n = channelOf(cd); if (n == null) return
+rampStop([n]); sendLevel(n, level, duration)
 }
-
-
-////// Driver Commands /////////
-
-void SetLevel(cd,level) {
-
-    def valueaux = level as Integer
-	def level2 = Math.max(Math.min(valueaux, 99), 0)	
-    
-	ipdomodulo  = state.ipaddress
-    lengthvar =  (cd.deviceNetworkId.length())
-    int relay = 0
-    
-// Start verify of length 
-      def substr1 = cd.deviceNetworkId.indexOf("-", cd.deviceNetworkId.indexOf("-") + 1);
-      def result01 = lengthvar - substr1 
-      if (result01 > 2  ) {
-           def  substr2a = substr1 + 1
-           def  substr2b = substr1 + 2
-           def substr3 = cd.deviceNetworkId[substr2a..substr2b]
-           numervalue1 = substr3
-
-          
-      }
-      else {
-          def substr3 = cd.deviceNetworkId[substr1+1]
-          numervalue1 = substr3
-        
-           }
-
-    def valor = ""
-    valor = numervalue1 as Integer
-    relay = valor   
-    
-     def stringrelay = relay
-     def comando = "1" + stringrelay + "%" + level2
-     interfaces.rawSocket.sendMessage(comando)   
-
-    logDebug ( "Foi Alterado o Dimmer " + relay + " via TCP com STRING: " + comando )
-    state.update = 1  //variable to control update with board on parse  
-    
-
-
-}//SETLEVEL function
-
-
-
-//SEND ON COMMAND IN CHILD BUTTON
-void on(cd) {
-if (logEnable) log.debug "Turn device ON "	
-sendEvent(name: "switch", value: "on", isStateChange: true)
-
-ipdomodulo  = state.ipaddress
-lengthvar =  (cd.deviceNetworkId.length())
-int relay = 0
-
-// Start verify of length     
-      def substr1 = cd.deviceNetworkId.indexOf("-", cd.deviceNetworkId.indexOf("-") + 1);
-      def result01 = lengthvar - substr1 
-      if (result01 > 2  ) {
-           def  substr2a = substr1 + 1
-           def  substr2b = substr1 + 2
-           def substr3 = cd.deviceNetworkId[substr2a..substr2b]
-           numervalue1 = substr3
-          
-      }
-      else {
-          def substr3 = cd.deviceNetworkId[substr1+1]
-          numervalue1 = substr3
-           }
-
-    def valor = ""
-    valor =   numervalue1 as Integer
-    relay = valor   
-
-///
-     def stringrelay = relay
-     def comando = "1" + stringrelay
-     interfaces.rawSocket.sendMessage(comando)
-     logDebug ( "Foi Ligado o Relay " + relay + " via TCP com STRING: " + comando )
-     state.updatemanual = 1  //variable to control update with board on parse
-
-    
+def componentStartLevelChange(cd, direction){
+Integer n = channelOf(cd); if (n == null) return
+rampStart([n], dirOf(direction))
 }
-
-
-//SEND OFF COMMAND IN CHILD BUTTON 
-void off(cd) {
-if (logEnable) log.debug "Turn device OFF"	
-sendEvent(name: "switch", value: "off", isStateChange: true)
-    
-ipdomodulo  = state.ipaddress
-lengthvar =  (cd.deviceNetworkId.length())
-int relay = 0
-
-//Start verify length
-      def substr1 = cd.deviceNetworkId.indexOf("-", cd.deviceNetworkId.indexOf("-") + 1);
-      def result01 = lengthvar - substr1 
-      if (result01 > 2  ) {
-           def  substr2a = substr1 + 1
-           def  substr2b = substr1 + 2
-           def substr3 = cd.deviceNetworkId[substr2a..substr2b]
-           numervalue1 = substr3
-          
-      }
-      else {
-          def substr3 = cd.deviceNetworkId[substr1+1]
-          numervalue1 = substr3
-           }
-
-    def valor = ""
-    valor =   numervalue1 as Integer
-    relay = valor   
-
-///
-     def stringrelay = relay
-     def comando = "2" + stringrelay
-     interfaces.rawSocket.sendMessage(comando)
-     logDebug ("Foi Desligado o Relay " + relay + " via TCP com STRING: " + comando )
-     state.updatemanual = 1  //variable to control update with board on parse
-    
+def componentStopLevelChange(cd){
+Integer n = channelOf(cd); if (n == null) return
+rampStop([n])
 }
-
-
-
-////////////////////////////////////////////////
-////////LOGGING
-///////////////////////////////////////////////
-
-
-private processEvent( Variable, Value ) {
-    if ( state."${ Variable }" != Value ) {
-        state."${ Variable }" = Value
-        logDebug( "Event: ${ Variable } = ${ Value }" )
-        sendEvent( name: "${ Variable }", value: Value, isStateChanged: true )
-    }
+ 
+private List<Integer> allChannels(){
+try { return ((childDevices ?: []).collect { channelOf(it) }.findAll { it != null }.unique().sort()) as List<Integer> }
+catch (e){ logWar("filhos indisponíveis (${e})"); return [] }
 }
-
-
-
-def logsOff() {
-    log.warn 'logging disabled...'
-    device.updateSetting('logInfo', [value:'false', type:'bool'])
-    device.updateSetting('logWarn', [value:'false', type:'bool'])
-    device.updateSetting('logDebug', [value:'false', type:'bool'])
-    device.updateSetting('logTrace', [value:'false', type:'bool'])
+private boolean masterAllowed(String oque){
+if (settings?.allowMasterOnOff == false){ logWar("${oque} geral ignorado: desligado nas Preferences (Permitir comandar todos os canais)"); return false }
+return true
 }
-
-void logDebug(String msg) {
-    if ((Boolean)settings.logDebug != false) {
-        log.debug "${drvThis}: ${msg}"
-    }
+def on(){
+if (!masterAllowed("On")) return
+List<Integer> chs = allChannels(); rampStop(chs)
+for (Integer n : chs){ if (!txRaw("1${n}", "canal ${n} on (geral)")) break; pauseExecution(150) }
 }
-
-void logInfo(String msg) {
-    if ((Boolean)settings.logInfo != false) {
-        log.info "${drvThis}: ${msg}"
-    }
+def off(){
+if (!masterAllowed("Off")) return
+List<Integer> chs = allChannels(); rampStop(chs)
+for (Integer n : chs){ if (!txRaw("2${n}", "canal ${n} off (geral)")) break; pauseExecution(150) }
 }
-
-void logTrace(String msg) {
-    if ((Boolean)settings.logTrace != false) {
-        log.trace "${drvThis}: ${msg}"
-    }
+def setLevel(level, duration = null){
+if (!masterAllowed("Set Level")) return
+List<Integer> chs = allChannels(); rampStop(chs)
+for (Integer n : chs){ if (!sendLevel(n, level, duration)) break; pauseExecution(150) }
 }
-
-void logWarn(String msg, boolean force = false) {
-    if (force || (Boolean)settings.logWarn != false) {
-        log.warn "${drvThis}: ${msg}"
-    }
+def startLevelChange(direction){
+if (!masterAllowed("Start Level Change")) return
+rampStart(allChannels(), dirOf(direction))
 }
-
-void logError(String msg) {
-    log.error "${drvThis}: ${msg}"
+def stopLevelChange(){ rampStop(allChannels()) } 
+ 
+private int rampInterval(int n){ Math.max(RAMP_STEP_MS, 100 * n) } 
+private void rampStart(List<Integer> chs, String dir){
+Map r = (state.ramp ?: [:]) as Map
+for (Integer n : chs){
+def cd = childFor(n)
+if (!cd) continue
+int base = (cd.currentValue("switch") == "on") ? ((cd.currentValue("level") ?: 0) as int) : 0
+if (dir == "down" && base == 0){ r.remove("${n}".toString()); continue } 
+r["${n}".toString()] = [dir: dir, lvl: base, until: now() + RAMP_MAX_MS]
+}
+state.ramp = r
+if (r) runInMillis(rampInterval(r.size()), "rampStep", [overwrite: true]) else unschedule("rampStep")
+}
+def rampStep(){
+Map r = (state.ramp ?: [:]) as Map
+if (!r || state.socketOnline != true){ state.ramp = [:]; return }
+int iv = rampInterval(r.size())
+int step = Math.min(50, (int) Math.ceil(prefInt("rampStep", 5, 1, 25) * iv / (double) RAMP_STEP_MS))
+Map keep = [:]
+for (def e in r){
+String k = e.key as String; Map v = e.value as Map
+if (now() > (v.until as long)) continue 
+int nv = (v.dir == "up") ? Math.min(100, (v.lvl as int) + step) : Math.max(1, (v.lvl as int) - step)
+if (nv == (v.lvl as int)) continue 
+if (!txRaw("1${k}%${nv}", "rampa canal ${k}")){ state.ramp = [:]; unschedule("rampStep"); return } 
+keep[k] = v + [lvl: nv]
+}
+state.ramp = keep
+if (keep) runInMillis(rampInterval(keep.size()), "rampStep", [overwrite: true])
+}
+private void rampStop(List<Integer> chs){
+Map r = (state.ramp ?: [:]) as Map
+chs.each { r.remove("${it}".toString()) }
+state.ramp = r
+if (!r) unschedule("rampStep")
 }
